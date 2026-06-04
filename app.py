@@ -264,7 +264,8 @@ with st.sidebar:
         "🌿 Nursery Analysis",
         "📊 Yield Trial Analysis",
         "💧 Drought Tolerance (WS vs WW)",
-        "📈 Multi-Trial Summary"
+        "📈 Multi-Trial Summary",
+        "🗄️ Database"
     ])
 
     st.divider()
@@ -867,3 +868,208 @@ elif page == "📈 Multi-Trial Summary":
                 'Avg Silk Date': round(df['silk_date'].mean(), 1) if df['silk_date'].notna().sum() > 0 else '-',
             })
         st.dataframe(pd.DataFrame(n_rows), use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: DATABASE
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🗄️ Database":
+    st.markdown('<div class="main-header"><h1>🗄️ Breeding Database</h1><p>บันทึกและค้นหาข้อมูลสายพันธุ์ · Pedigree · Cross History</p></div>', unsafe_allow_html=True)
+
+    try:
+        from supabase import create_client
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["secret_key"]
+        supabase = create_client(url, key)
+        st.success("✅ เชื่อมต่อ Database สำเร็จ")
+    except Exception as e:
+        st.error(f"❌ ไม่สามารถเชื่อมต่อ Database: {e}")
+        st.stop()
+
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 ค้นหาสายพันธุ์", "➕ เพิ่มข้อมูล Nursery", "📊 บันทึก Yield Trial", "📋 ประวัติ Cross"])
+
+    with tab1:
+        section("🔍 ค้นหาสายพันธุ์และ Pedigree")
+        col1, col2 = st.columns(2)
+        with col1:
+            search_term = st.text_input("ค้นหาด้วย code หรือ pedigree", placeholder="เช่น KK101, TF7, Nei...")
+        with col2:
+            search_year = st.number_input("กรองตามปี (0 = ทุกปี)", 0, 2030, 0)
+
+        if st.button("🔍 ค้นหา") or search_term:
+            try:
+                # Search nursery
+                q = supabase.table("nursery").select("*")
+                if search_term:
+                    q = q.ilike("pedigree", f"%{search_term}%")
+                if search_year > 0:
+                    q = q.eq("year", search_year)
+                result = q.limit(200).execute()
+
+                if result.data:
+                    df_search = pd.DataFrame(result.data)
+                    section(f"พบ {len(df_search)} รายการใน Nursery")
+                    show = [c for c in ['exp_code','year','season','entry_no','pedigree','origin',
+                                        'silk_date','weight_gm','selected','comments'] if c in df_search.columns]
+                    st.dataframe(df_search[show], use_container_width=True, height=400)
+                    csv = df_search.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("⬇️ Download", csv, "search_result.csv", "text/csv")
+                else:
+                    st.info("ไม่พบข้อมูลที่ค้นหา")
+
+                # Search yield trial
+                q2 = supabase.table("yield_trial").select("*")
+                if search_term:
+                    q2 = q2.ilike("pedigree", f"%{search_term}%")
+                if search_year > 0:
+                    q2 = q2.eq("year", search_year)
+                result2 = q2.limit(200).execute()
+
+                if result2.data:
+                    df_yt = pd.DataFrame(result2.data)
+                    section(f"พบ {len(df_yt)} รายการใน Yield Trial")
+                    show2 = [c for c in ['exp_code','year','season','location','stage',
+                                         'water_treatment','entry_no','pedigree',
+                                         'yield_ton_rai','moist_pct','is_check'] if c in df_yt.columns]
+                    st.dataframe(df_yt[show2], use_container_width=True, height=400)
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    with tab2:
+        section("➕ บันทึกข้อมูล Nursery เข้า Database")
+        st.info("เลือกไฟล์จาก Google Drive แล้วกด Save เพื่อบันทึกเข้า Database")
+
+        if nursery_data:
+            sel = st.selectbox("เลือกไฟล์ Nursery", list(nursery_data.keys()))
+            df_n = nursery_data[sel].copy()
+
+            # Parse year/season from filename
+            import re
+            fname = sel.replace('.xlsx','')
+            yr_match = re.search(r'(\d{2})(\d{4}|\d{2})', fname)
+            year_guess = 2000 + int(fname[1:3]) if len(fname) > 2 else 2026
+            season_guess = fname[3] if len(fname) > 3 else 'D'
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                year_in = st.number_input("ปี", 1995, 2030, year_guess)
+            with col2:
+                season_in = st.selectbox("ฤดู", ['D','R'], index=0 if season_guess=='D' else 1)
+            with col3:
+                location_in = st.text_input("สถานที่", "NSW")
+
+            st.dataframe(df_n.head(5), use_container_width=True)
+            st.caption(f"จะบันทึก {len(df_n)} entries")
+
+            if st.button("💾 บันทึกเข้า Database"):
+                records = []
+                for _, row in df_n.iterrows():
+                    rec = {
+                        'exp_code': fname,
+                        'year': int(year_in),
+                        'season': season_in,
+                        'location': location_in,
+                        'entry_no': int(row['entry']) if pd.notna(row.get('entry')) else None,
+                        'pedigree': str(row['pedigree']) if pd.notna(row.get('pedigree')) else None,
+                        'origin': str(row['origin']) if pd.notna(row.get('origin')) else None,
+                        'silk_date': float(row['silk_date']) if pd.notna(row.get('silk_date')) else None,
+                        'plant_ht': float(row['plant_ht']) if pd.notna(row.get('plant_ht')) else None,
+                        'ear_ht': float(row['ear_ht']) if pd.notna(row.get('ear_ht')) else None,
+                        'weight_gm': float(row['weight_gm']) if pd.notna(row.get('weight_gm')) else None,
+                        'plant_asp': float(row['plant_asp']) if pd.notna(row.get('plant_asp')) else None,
+                        'ear_asp': float(row['ear_asp']) if pd.notna(row.get('ear_asp')) else None,
+                        'comments': str(row['comments']) if pd.notna(row.get('comments')) else None,
+                    }
+                    records.append(rec)
+                try:
+                    supabase.table("nursery").upsert(records, on_conflict="exp_code,entry_no").execute()
+                    st.success(f"✅ บันทึก {len(records)} entries สำเร็จ!")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        else:
+            st.info("โหลดข้อมูลจาก Google Drive ก่อนครับ")
+
+    with tab3:
+        section("📊 บันทึกข้อมูล Yield Trial เข้า Database")
+
+        if all_yt:
+            sel_yt = st.selectbox("เลือกไฟล์ Yield Trial", list(all_yt.keys()))
+            df_yt_save = all_yt[sel_yt].copy()
+
+            fname_yt = sel_yt.replace('.xlsx','')
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                year_yt = st.number_input("ปี ", 1995, 2030, 2026)
+            with col2:
+                season_yt = st.selectbox("ฤดู ", ['D','R'])
+            with col3:
+                stage_yt = st.selectbox("Stage", ['preliminary','standard','coordinated','farm'])
+            with col4:
+                loc_yt = st.text_input("สถานที่ ", "NSW")
+
+            st.caption(f"จะบันทึก {len(df_yt_save)} observations")
+
+            if st.button("💾 บันทึก Yield Trial"):
+                records_yt = []
+                for _, row in df_yt_save.iterrows():
+                    rec = {
+                        'exp_code': fname_yt,
+                        'year': int(year_yt),
+                        'season': season_yt,
+                        'location': loc_yt,
+                        'stage': stage_yt,
+                        'water_treatment': row.get('trial_type','WW'),
+                        'rep': int(row['rep']) if pd.notna(row.get('rep')) else None,
+                        'block': int(row['blk']) if pd.notna(row.get('blk')) else None,
+                        'entry_no': int(row['entry']) if pd.notna(row.get('entry')) else None,
+                        'plot_no': int(row['plot']) if pd.notna(row.get('plot')) else None,
+                        'pedigree': str(row['pedigree']) if pd.notna(row.get('pedigree')) else None,
+                        'origin': str(row['origin']) if pd.notna(row.get('origin')) else None,
+                        'days_tass': float(row['days_tass']) if pd.notna(row.get('days_tass')) else None,
+                        'days_silk': float(row['days_silk']) if pd.notna(row.get('days_silk')) else None,
+                        'plant_ht': float(row['plant_ht']) if pd.notna(row.get('plant_ht')) else None,
+                        'ear_ht': float(row['ear_ht']) if pd.notna(row.get('ear_ht')) else None,
+                        'yield_kg_rai': float(row['yield_kg_rai']) if pd.notna(row.get('yield_kg_rai')) else None,
+                        'yield_ton_rai': float(row['yield_ton_rai']) if pd.notna(row.get('yield_ton_rai')) else None,
+                        'moist_pct': float(row['moist_pct']) if pd.notna(row.get('moist_pct')) else None,
+                        'shell_pct': float(row['shell_pct']) if pd.notna(row.get('shell_pct')) else None,
+                        'is_check': bool(row['is_check']) if pd.notna(row.get('is_check')) else False,
+                    }
+                    records_yt.append(rec)
+                try:
+                    supabase.table("yield_trial").upsert(records_yt, on_conflict="exp_code,entry_no,rep").execute()
+                    st.success(f"✅ บันทึก {len(records_yt)} observations สำเร็จ!")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        else:
+            st.info("โหลดข้อมูลจาก Google Drive ก่อนครับ")
+
+    with tab4:
+        section("📋 ประวัติการบันทึกใน Database")
+        col1, col2 = st.columns(2)
+        with col1:
+            try:
+                r_n = supabase.table("nursery").select("year, exp_code, count", count="exact").execute()
+                total_n = r_n.count if r_n.count else 0
+                st.metric("Nursery entries ใน DB", total_n)
+
+                r_n2 = supabase.table("nursery").select("exp_code, year").execute()
+                if r_n2.data:
+                    df_summary = pd.DataFrame(r_n2.data)
+                    summary = df_summary.groupby(['year','exp_code']).size().reset_index(name='entries')
+                    st.dataframe(summary, use_container_width=True, height=300)
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+        with col2:
+            try:
+                r_yt = supabase.table("yield_trial").select("year, exp_code", count="exact").execute()
+                total_yt = r_yt.count if r_yt.count else 0
+                st.metric("Yield Trial rows ใน DB", total_yt)
+
+                if r_yt.data:
+                    df_yt_sum = pd.DataFrame(r_yt.data)
+                    summary_yt = df_yt_sum.groupby(['year','exp_code']).size().reset_index(name='observations')
+                    st.dataframe(summary_yt, use_container_width=True, height=300)
+            except Exception as e:
+                st.error(f"Error: {e}")
