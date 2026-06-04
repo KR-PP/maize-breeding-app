@@ -1053,7 +1053,7 @@ elif page == "🗄️ Database":
                 total_n = r_n.count if r_n.count else 0
                 st.metric("Nursery entries ใน DB", total_n)
 
-                r_n2 = supabase.table("nursery").select("exp_code, year").execute()
+                r_n2 = supabase.table("nursery").select("exp_code, year, id").execute()
                 if r_n2.data:
                     df_summary = pd.DataFrame(r_n2.data)
                     summary = df_summary.groupby(['year','exp_code']).size().reset_index(name='entries')
