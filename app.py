@@ -268,53 +268,85 @@ with st.sidebar:
     ])
 
     st.divider()
-    st.markdown("**📁 Upload ไฟล์**")
-    nursery_files = st.file_uploader("Nursery (P……xlsx)", type=['xlsx'], accept_multiple_files=True)
-    ws_files = st.file_uploader("Yield Trial WS (……WS.xlsx)", type=['xlsx'], accept_multiple_files=True)
-    ww_files = st.file_uploader("Yield Trial WW (……WW.xlsx)", type=['xlsx'], accept_multiple_files=True)
-    yt_files = st.file_uploader("Yield Trial อื่นๆ (YT……xlsx)", type=['xlsx'], accept_multiple_files=True)
-
+    if st.button("🔄 โหลดข้อมูลจาก Google Drive"):
+        st.cache_data.clear()
+        st.rerun()
+    st.caption("ข้อมูลโหลดจาก Google Drive อัตโนมัติ")
     st.divider()
-    st.caption("v1.0 | NSFCRC 2026")
+    st.caption("v2.0 | NSFCRC 2026")
 
-# ─── LOAD DATA ───────────────────────────────────────────────────────────────
-@st.cache_data
-def cached_load_nursery(file_bytes, name):
-    import io
-    return load_nursery(io.BytesIO(file_bytes))
-
-@st.cache_data
-def cached_load_yt(file_bytes, name, ttype):
-    import io
-    return load_yield_trial(io.BytesIO(file_bytes), ttype)
-
-nursery_data = {}
-for f in nursery_files:
+# ─── GOOGLE DRIVE LOADER ─────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load_files_from_drive():
     try:
-        nursery_data[f.name] = cached_load_nursery(f.read(), f.name)
-    except Exception as e:
-        st.sidebar.error(f"❌ {f.name}: {e}")
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
 
-ws_data = {}
-for f in ws_files:
-    try:
-        ws_data[f.name] = cached_load_yt(f.read(), f.name, 'WS')
-    except Exception as e:
-        st.sidebar.error(f"❌ {f.name}: {e}")
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        service = build("drive", "v3", credentials=creds)
+        folder_id = st.secrets["google_drive"]["folder_id"]
 
-ww_data = {}
-for f in ww_files:
-    try:
-        ww_data[f.name] = cached_load_yt(f.read(), f.name, 'WW')
-    except Exception as e:
-        st.sidebar.error(f"❌ {f.name}: {e}")
+        # List all xlsx files recursively
+        def list_xlsx(fid):
+            results = []
+            # files in this folder
+            resp = service.files().list(
+                q=f"'{fid}' in parents and mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' and trashed=false",
+                fields="files(id, name)"
+            ).execute()
+            results.extend(resp.get("files", []))
+            # subfolders
+            subs = service.files().list(
+                q=f"'{fid}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="files(id, name)"
+            ).execute()
+            for sub in subs.get("files", []):
+                results.extend(list_xlsx(sub["id"]))
+            return results
 
-yt_data = {}
-for f in yt_files:
-    try:
-        yt_data[f.name] = cached_load_yt(f.read(), f.name, 'YT')
+        files = list_xlsx(folder_id)
+
+        nursery, ws, ww, yt = {}, {}, {}, {}
+        for f in files:
+            name = f["name"]
+            fid  = f["id"]
+            req  = service.files().get_media(fileId=fid)
+            buf  = io.BytesIO()
+            dl   = MediaIoBaseDownload(buf, req)
+            done = False
+            while not done:
+                _, done = dl.next_chunk()
+            buf.seek(0)
+            data = buf.read()
+
+            try:
+                if name.startswith("P") and name.endswith(".xlsx"):
+                    nursery[name] = load_nursery(io.BytesIO(data))
+                elif "WS" in name.upper() and name.endswith(".xlsx"):
+                    ws[name] = load_yield_trial(io.BytesIO(data), "WS")
+                elif "WW" in name.upper() and name.endswith(".xlsx"):
+                    ww[name] = load_yield_trial(io.BytesIO(data), "WW")
+                elif name.startswith("YT") and name.endswith(".xlsx"):
+                    yt[name] = load_yield_trial(io.BytesIO(data), "YT")
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ {name}: {e}")
+
+        return nursery, ws, ww, yt, None
+
     except Exception as e:
-        st.sidebar.error(f"❌ {f.name}: {e}")
+        return {}, {}, {}, {}, str(e)
+
+with st.spinner("📂 กำลังโหลดข้อมูลจาก Google Drive..."):
+    nursery_data, ws_data, ww_data, yt_data, drive_error = load_files_from_drive()
+
+if drive_error:
+    st.sidebar.error(f"❌ Drive error: {drive_error}")
 
 all_yt = {**ws_data, **ww_data, **yt_data}
 
