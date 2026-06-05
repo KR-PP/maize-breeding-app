@@ -252,7 +252,20 @@ def _parse_old_yt_sheet(df, sheet_name, trial_type):
 
     entry_ci = next((k for k,v in col_map.items() if v=='entry_no'), 1)
     data_df = df.iloc[header_row+2:].copy()
-    data_df = data_df[pd.to_numeric(data_df.iloc[:, entry_ci], errors='coerce').notna()]
+
+    # Try numeric entry filter, if fails use pedigree filter
+    entry_numeric = pd.to_numeric(data_df.iloc[:, entry_ci], errors='coerce').notna()
+    if entry_numeric.sum() == 0:
+        # No numeric entry — use pedigree col instead (col 0)
+        pedigree_ci = next((k for k,v in col_map.items() if v=='pedigree'), 0)
+        data_df = data_df[data_df.iloc[:, pedigree_ci].notna()].copy()
+        # Assign sequential entry numbers
+        data_df = data_df[data_df.iloc[:, pedigree_ci].astype(str).str.strip() != '']
+        data_df = data_df[~data_df.iloc[:, pedigree_ci].astype(str).str.lower().str.contains('pedigree|nan|none')]
+        data_df['_auto_entry'] = range(1, len(data_df)+1)
+        col_map[99] = '_auto_entry'  # temp key
+    else:
+        data_df = data_df[entry_numeric]
     if len(data_df) == 0: return None
 
     # Location from sheet name
@@ -260,19 +273,24 @@ def _parse_old_yt_sheet(df, sheet_name, trial_type):
         'NSW':'นครสวรรค์','NRS':'นครราชสีมา','SRB':'สระบุรี',
         'PHB':'เพชรบูรณ์','SKT':'สุโขทัย','LOE':'เลย',
         'SPB':'สุพรรณบุรี','SKL':'สงขลา','SW':'ไร่สุวรรณ',
-        'CM':'เชียงใหม่','KK':'ขอนแก่น','LB':'ลพบุรี',
+        'CM':'เชียงใหม่','CMI':'เชียงใหม่','KK':'ขอนแก่น',
+        'LB':'ลพบุรี','RYG':'ระยอง','CPN':'ชุมพร',
+        'NK':'นครปฐม','PT':'ปทุมธานี','KBI':'กระบี่',
     }
     loc_code = re.sub(r'\d+.*$', '', sheet_name.upper()).strip('-').strip()
     location = LOC_MAP.get(loc_code, sheet_name)
 
     records = []
-    for _, row in data_df.iterrows():
+    for idx, (_, row) in enumerate(data_df.iterrows()):
         rec = {'location': location, 'trial_type': trial_type, 'is_check': False}
         for ci, col_name in col_map.items():
+            if col_name == '_auto_entry':
+                rec['entry_no'] = idx + 1
+                continue
             val = row.iloc[ci] if ci < len(row) else None
             if col_name == 'entry_no':
-                try: rec[col_name] = int(float(val)) if pd.notna(val) else None
-                except: pass
+                try: rec[col_name] = int(float(val)) if pd.notna(val) and str(val).strip() not in ['','nan','None'] else idx+1
+                except: rec[col_name] = idx+1
             elif col_name == 'pedigree':
                 rec[col_name] = str(val).strip() if pd.notna(val) else None
             else:
