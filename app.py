@@ -86,13 +86,33 @@ def load_nursery(f):
             df[c] = pd.to_numeric(df[c], errors='coerce')
     return df
 
+def _normalize_df(df):
+    """Ensure all required columns exist with standard names"""
+    if 'entry_no' in df.columns and 'entry' not in df.columns:
+        df = df.copy()
+        df['entry'] = df['entry_no']
+    if 'rep' not in df.columns:
+        df = df.copy() if 'entry' in df.columns else df
+        df['rep'] = 1
+    if 'blk' not in df.columns:
+        df['blk'] = 1
+    if 'is_check' not in df.columns:
+        df['is_check'] = False
+    if 'origin' not in df.columns:
+        df['origin'] = None
+    if 'pedigree' not in df.columns:
+        df['pedigree'] = None
+    if 'yield_ton_rai' not in df.columns and 'yield_kg_rai' in df.columns:
+        df['yield_ton_rai'] = pd.to_numeric(df['yield_kg_rai'], errors='coerce') / 1000
+    return df
+
 def load_yield_trial(f, trial_type='WW'):
     # Try modern format first (sheet 'ข้อมูลดิบ')
     try:
         df = pd.read_excel(f, sheet_name='ข้อมูลดิบ', header=None, skiprows=4)
         df.columns = range(len(df.columns))
         df = df[pd.to_numeric(df[0], errors='coerce').notna()].copy()
-        return _parse_modern_yt(df, trial_type)
+        return _normalize_df(_parse_modern_yt(df, trial_type))
     except Exception:
         pass
 
@@ -113,7 +133,7 @@ def load_yield_trial(f, trial_type='WW'):
             except Exception:
                 continue
         if all_dfs:
-            return pd.concat(all_dfs, ignore_index=True)
+            return _normalize_df(pd.concat(all_dfs, ignore_index=True))
     except Exception:
         pass
 
@@ -692,7 +712,7 @@ elif page == "📊 Yield Trial Analysis":
     yield_col = 'yield_adj' if use_adj else 'yield_ton_rai'
 
     n_reps    = df['rep'].nunique() if 'rep' in df.columns else 0
-    n_entries = df[df['is_check']==False]['entry'].nunique()
+    n_entries = df[df['is_check']==False][next((c for c in ['entry','entry_no'] if c in df.columns), 'entry')].nunique() if any(c in df.columns for c in ['entry','entry_no']) else 0
     n_checks  = df[df['is_check']==True]['origin'].nunique() if 'origin' in df.columns else 0
     check_mean = df[df['is_check']==True]['yield_ton_rai'].mean()
     grand_mean = df['yield_ton_rai'].mean()
@@ -768,14 +788,16 @@ elif page == "📊 Yield Trial Analysis":
                     ck_means = checks_plot.groupby('origin')[yield_col if yield_col in checks_plot else 'yield_ton_rai'].mean().reset_index()
                     ck_means.columns = ['label','mean']
                     ck_means['type'] = 'Check'
-                    top20['label'] = top20['entry'].astype(str)
+                    entry_col = 'entry' if 'entry' in top20.columns else 'entry_no'
+                    top20['label'] = top20[entry_col].astype(str)
                     top20['type'] = 'Entry'
                     plot_df = pd.concat([
                         top20[['label','mean','type']],
                         ck_means[['label','mean','type']]
                     ])
                 else:
-                    top20['label'] = top20['entry'].astype(str)
+                    entry_col = 'entry' if 'entry' in top20.columns else 'entry_no'
+                    top20['label'] = top20[entry_col].astype(str)
                     top20['type'] = 'Entry'
                     plot_df = top20[['label','mean','type']]
 
@@ -976,7 +998,7 @@ elif page == "📈 Multi-Trial Summary":
     rows = []
     for name, df in all_yt.items():
         ttype = df['trial_type'].iloc[0] if 'trial_type' in df.columns else '-'
-        n_entries = df[df['is_check']==False]['entry'].nunique()
+        n_entries = df[df['is_check']==False][next((c for c in ['entry','entry_no'] if c in df.columns), 'entry')].nunique() if any(c in df.columns for c in ['entry','entry_no']) else 0
         n_checks = df[df['is_check']==True]['origin'].nunique() if 'origin' in df.columns else 0
         mean_yield = df['yield_ton_rai'].mean()
         check_yield = df[df['is_check']==True]['yield_ton_rai'].mean()
