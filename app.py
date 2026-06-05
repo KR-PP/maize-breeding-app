@@ -1049,27 +1049,22 @@ elif page == "🗄️ Database":
         col1, col2 = st.columns(2)
         with col1:
             try:
-                r_n = supabase.table("nursery").select("year, exp_code, count", count="exact").execute()
+                r_n = supabase.table("nursery").select("id", count="exact").execute()
                 total_n = r_n.count if r_n.count else 0
                 st.metric("Nursery entries ใน DB", total_n)
-
-                r_n2 = supabase.table("nursery").select("exp_code, year, id").execute()
+                r_n2 = supabase.table("nursery_summary").select("*").execute()
                 if r_n2.data:
-                    df_summary = pd.DataFrame(r_n2.data)
-                    summary = df_summary.groupby(['year','exp_code']).size().reset_index(name='entries')
-                    st.dataframe(summary, use_container_width=True, height=300)
+                    st.dataframe(pd.DataFrame(r_n2.data), use_container_width=True, height=300)
             except Exception as e:
                 st.error(f"Error: {e}")
 
         with col2:
             try:
-                r_yt = supabase.table("yield_trial").select("year, exp_code", count="exact").execute()
+                r_yt = supabase.table("yield_trial").select("id", count="exact").execute()
                 total_yt = r_yt.count if r_yt.count else 0
                 st.metric("Yield Trial rows ใน DB", total_yt)
-
-                if r_yt.data:
-                    df_yt_sum = pd.DataFrame(r_yt.data)
-                    summary_yt = df_yt_sum.groupby(['year','exp_code']).size().reset_index(name='observations')
-                    st.dataframe(summary_yt, use_container_width=True, height=300)
+                r_yt2 = supabase.table("yt_summary").select("*").execute()
+                if r_yt2.data:
+                    st.dataframe(pd.DataFrame(r_yt2.data), use_container_width=True, height=300)
             except Exception as e:
                 st.error(f"Error: {e}")
