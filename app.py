@@ -714,7 +714,14 @@ elif page == "📊 Yield Trial Analysis":
     n_reps    = df['rep'].nunique() if 'rep' in df.columns else 0
     n_entries = df[df['is_check']==False][next((c for c in ['entry','entry_no'] if c in df.columns), 'entry')].nunique() if any(c in df.columns for c in ['entry','entry_no']) else 0
     n_checks  = df[df['is_check']==True]['origin'].nunique() if 'origin' in df.columns else 0
-    check_mean = df[df['is_check']==True]['yield_ton_rai'].mean()
+
+    # Ensure yield_ton_rai exists
+    if 'yield_ton_rai' not in df.columns and 'yield_kg_rai' in df.columns:
+        df['yield_ton_rai'] = pd.to_numeric(df['yield_kg_rai'], errors='coerce') / 1000
+    elif 'yield_ton_rai' not in df.columns:
+        df['yield_ton_rai'] = np.nan
+
+    check_mean = df[df['is_check']==True]['yield_ton_rai'].mean() if 'is_check' in df.columns else np.nan
     grand_mean = df['yield_ton_rai'].mean()
     cv = cv_percent(df['yield_ton_rai'])
 
