@@ -976,8 +976,8 @@ elif page == "🗄️ Database":
                         'plant_ht': float(row['plant_ht']) if pd.notna(row.get('plant_ht')) else None,
                         'ear_ht': float(row['ear_ht']) if pd.notna(row.get('ear_ht')) else None,
                         'weight_gm': float(row['weight_gm']) if pd.notna(row.get('weight_gm')) else None,
-                        'plant_asp': float(row['plant_asp']) if pd.notna(row.get('plant_asp')) else None,
-                        'ear_asp': float(row['ear_asp']) if pd.notna(row.get('ear_asp')) else None,
+                        'plant_asp': float(str(row['plant_asp']).replace('o','').replace('^','').strip()) if pd.notna(row.get('plant_asp')) and str(row.get('plant_asp','')) not in ['None','nan',''] else None,
+                        'ear_asp': float(str(row['ear_asp']).replace('o','').replace('^','').strip()) if pd.notna(row.get('ear_asp')) and str(row.get('ear_asp','')) not in ['None','nan',''] else None,
                         'comments': str(row['comments']) if pd.notna(row.get('comments')) else None,
                     }
                     records.append(rec)
