@@ -1101,19 +1101,32 @@ elif page == "📥 Import ข้อมูลเก่า":
         try: return round(float(v), 2) if pd.notna(v) else None
         except: return None
 
-    def parse_old_yt_file(file_bytes, filename):
-        """Parse old XLS/XLSX yield trial file — multi-sheet format"""
-        fname = os.path.splitext(filename)[0].upper()
+    # Location code mapping
+    LOC_MAP = {
+        'NSW': 'นครสวรรค์', 'NRS': 'นครราชสีมา', 'SRB': 'สระบุรี',
+        'PHB': 'เพชรบูรณ์', 'SKT': 'สุโขทัย', 'LOE': 'เลย',
+        'SPB': 'สุพรรณบุรี', 'SKL': 'สงขลา', 'SW': 'ไร่สุวรรณ',
+        'CM': 'เชียงใหม่', 'KK': 'ขอนแก่น', 'LB': 'ลพบุรี',
+        'NK': 'นครปฐม', 'PT': 'ปทุมธานี',
+    }
 
-        # Try reading with appropriate engine
+    def get_location_name(sheet_name):
+        """Extract location from sheet name e.g. NSW1 -> นครสวรรค์"""
+        code = re.sub(r'\d+.*$', '', sheet_name.upper()).strip('-').strip()
+        return LOC_MAP.get(code, sheet_name)
+
+    def parse_old_yt_file(file_bytes, filename):
+        """Parse NSFCRC yield trial file — multi-sheet format (1995-2026)"""
+        fname_base = os.path.splitext(filename)[0]
+        # Remove long descriptive suffix e.g. COMM95R__Commercial_yield_Trial_
+        exp_code = re.split(r'__', fname_base)[0].upper()
+
+        # Read file
         try:
             if filename.lower().endswith('.xls'):
-                # Use xlrd for old .xls format
                 try:
-                    import xlrd
                     xl = pd.ExcelFile(io.BytesIO(file_bytes), engine='xlrd')
-                except ImportError:
-                    # xlrd not available — try openpyxl as fallback
+                except Exception:
                     xl = pd.ExcelFile(io.BytesIO(file_bytes))
             else:
                 xl = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -1121,97 +1134,145 @@ elif page == "📥 Import ข้อมูลเก่า":
             st.warning(f"⚠️ ไม่สามารถอ่านไฟล์ {filename}: {e}")
             return []
 
-        SKIP = {'วิเคราะห์รวม','sheet1','sheet2','sheet3','acloss',
-                '(1)วิเคราะห์รวม','(2) วิเคราะห์รวม'}
+        SKIP_SHEETS = {'combine analysis', 'combined analysis', 'วิเคราะห์รวม',
+                       'sheet1', 'sheet2', 'sheet3', 'acloss', 'planting summary'}
 
-        # Detect exp_code and year from filename
-        fname = os.path.splitext(filename)[0].upper()
-        year_match = re.search(r'(\d{2})$', fname)
-        year = None
-        if year_match:
-            yr2 = int(year_match.group(1))
-            year = 1900 + yr2 if yr2 >= 95 else 2000 + yr2
-
-        # Detect stage from filename prefix
+        # Detect stage from exp_code
         stage_map = {
             'COMM': 'coordinated', 'SYT': 'standard', 'RYT': 'regional',
             'FYT': 'farm', 'YT': 'preliminary', 'PT': 'preliminary',
-            'ST': 'standard', 'CT': 'coordinated'
+            'ST': 'standard', 'CT': 'coordinated', 'NST': 'standard'
         }
         stage = 'coordinated'
         for prefix, s in stage_map.items():
-            if fname.startswith(prefix):
+            if exp_code.startswith(prefix):
                 stage = s
                 break
 
         all_records = []
         for sh in xl.sheet_names:
-            if sh.lower() in SKIP or 'รวม' in sh:
+            if sh.lower().strip() in SKIP_SHEETS or 'รวม' in sh or 'analys' in sh.lower():
                 continue
 
             try:
-                df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sh, header=None)
+                if filename.lower().endswith('.xls'):
+                    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sh,
+                                      header=None, engine='xlrd')
+                else:
+                    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sh, header=None)
             except Exception:
                 continue
 
-            # Find title & year from sheet
-            title_text = ''
-            for i in range(min(5, len(df))):
-                for cell in df.iloc[i]:
-                    if pd.notna(cell): title_text += str(cell) + ' '
+            if len(df) < 4:
+                continue
 
-            # Override year from title if found
+            # Extract year from title row (row 0)
+            title_text = ' '.join(str(v) for v in df.iloc[0] if pd.notna(v))
+            year = None
             m = re.search(r'\b(25\d{2})\b', title_text)
             if m:
                 year = int(m.group(1)) - 543
+            else:
+                # Guess year from exp_code e.g. COMM95 -> 1995
+                m2 = re.search(r'(\d{2})', exp_code)
+                if m2:
+                    yr2 = int(m2.group(1))
+                    year = 1900 + yr2 if yr2 >= 95 else 2000 + yr2
 
-            # Find header row
-            header_row = None
-            for i in range(min(8, len(df))):
+            # Detect season from title
+            season = 'D' if any(w in title_text for w in ['แล้ง','dry','D season']) else 'R'
+
+            # Find header rows (row 1 = main header, row 2 = sub-header)
+            # Header row = row where 'Pedigree' or 'ชื่อพันธุ์' appears
+            header_row = 1  # default
+            for i in range(min(5, len(df))):
                 vals = [str(v).strip() for v in df.iloc[i] if pd.notna(v)]
-                if any(v in ['Entry', 'เลข'] for v in vals):
+                if any('Pedigree' in v or 'ชื่อพันธุ์' in v for v in vals):
                     header_row = i
                     break
-            if header_row is None:
-                continue
 
-            # Map columns
-            col_map = {0: 'entry_no', 1: 'pedigree', 2: 'yield_kg_rai'}
-            for ci in range(3, min(20, df.shape[1])):
-                col_vals = []
-                for r in range(max(0, header_row-1), min(header_row+3, len(df))):
-                    v = df.iloc[r, ci] if ci < df.shape[1] else ''
-                    col_vals.append(str(v).strip() if pd.notna(v) else '')
-                combined = ' '.join(col_vals).lower()
-                if 'ออกดอก' in combined or 'tass' in combined:
+            # Build column map from header rows 1 and 2
+            # Col layout: 0=Pedigree, 1=Entry, 2=DaysFlowering,
+            #             3=PlantHt, 4=EarHt, 5=RootLodge, 6=StalkLodge,
+            #             7=StandCount, 8=EarTotal, 9=EarRot,
+            #             10=Shelling, 11=Moist, 12=PlantAsp, 13=EarAsp/OpHK,
+            #             14=OpHK/Yield, last=Yield, last-1=YieldIndex
+
+            def get_col_text(ci):
+                texts = []
+                for r in range(max(0, header_row), min(header_row+3, len(df))):
+                    v = df.iloc[r, ci] if ci < df.shape[1] else None
+                    if pd.notna(v): texts.append(str(v).strip().lower())
+                return ' '.join(texts)
+
+            col_map = {}
+            ncols = df.shape[1]
+
+            for ci in range(ncols):
+                ct = get_col_text(ci)
+                if 'pedigree' in ct or 'ชื่อพันธุ์' in ct:
+                    col_map[ci] = 'pedigree'
+                elif ct.strip() in ['ent','entry'] or ct == 'ent':
+                    col_map[ci] = 'entry_no'
+                elif 'day to flower' in ct or 'flowering' in ct:
                     col_map[ci] = 'days_tass'
-                elif 'สูงทั้งต้น' in combined or ('สูง' in combined and 'ทั้ง' in combined):
+                elif 'plant' in ct and 'height' in ct.replace('height','ht'):
                     col_map[ci] = 'plant_ht'
-                elif 'สูงฝัก' in combined or ('สูง' in combined and 'ฝัก' in combined):
+                elif 'ear' in ct and ('height' in ct or 'ht' in ct) and 'rot' not in ct and 'total' not in ct:
                     col_map[ci] = 'ear_ht'
-                elif 'ความชื้น' in combined or 'ชื้นใน' in combined:
-                    col_map[ci] = 'moist_pct'
-                elif 'หัก' in combined and 'เพราะ' in combined:
+                elif 'root' in ct and 'lodg' in ct:
                     col_map[ci] = 'root_lodge'
-                elif 'ล้ม' in combined:
+                elif 'stalk' in ct and 'lodg' in ct:
                     col_map[ci] = 'stalk_lodge'
-                elif 'ฝักเสีย' in combined:
+                elif 'stand' in ct:
+                    col_map[ci] = 'stand_count'
+                elif 'ear' in ct and 'total' in ct:
+                    col_map[ci] = 'n_ears'
+                elif 'rot' in ct:
                     col_map[ci] = 'ear_rot'
-                elif 'ทรงต้น' in combined:
+                elif 'shell' in ct:
+                    col_map[ci] = 'shell_pct'
+                elif 'moist' in ct:
+                    col_map[ci] = 'moist_pct'
+                elif 'aspect' in ct and 'plant' in ct:
                     col_map[ci] = 'plant_asp'
-                elif 'ลักษณะฝัก' in combined or 'ear_asp' in combined:
+                elif 'aspect' in ct and 'ear' in ct:
                     col_map[ci] = 'ear_asp'
+                elif 'hk' in ct or 'open' in ct:
+                    col_map[ci] = 'open_hk'
+                elif 'yield' in ct and 'index' not in ct and 'kg' in ct:
+                    col_map[ci] = 'yield_kg_rai'
+                elif 'yield' in ct and 'index' not in ct and ci == ncols - 2:
+                    col_map[ci] = 'yield_kg_rai'
+                elif 'yield' in ct and 'index' not in ct:
+                    col_map[ci] = 'yield_kg_rai'
 
-            # Parse data rows
-            data_df = df.iloc[header_row+2:].copy()
-            data_df = data_df[pd.to_numeric(data_df.iloc[:, 0], errors='coerce').notna()]
+            # If yield not found, use second-to-last numeric col
+            if 'yield_kg_rai' not in col_map.values():
+                col_map[ncols - 2] = 'yield_kg_rai'
+            if 'pedigree' not in col_map.values():
+                col_map[0] = 'pedigree'
+            if 'entry_no' not in col_map.values():
+                col_map[1] = 'entry_no'
+
+            # Reverse map for lookup
+            col_lookup = {v: k for k, v in col_map.items()}
+
+            # Data rows start after header+2
+            data_start = header_row + 2
+            data_df = df.iloc[data_start:].copy()
+            # Keep rows where entry col is numeric
+            entry_ci = col_lookup.get('entry_no', 1)
+            data_df = data_df[pd.to_numeric(data_df.iloc[:, entry_ci], errors='coerce').notna()]
+
+            location_name = get_location_name(sh)
 
             for _, row in data_df.iterrows():
                 rec = {
-                    'exp_code': fname,
+                    'exp_code': exp_code,
                     'year': year,
-                    'season': 'R',
-                    'location': sh,
+                    'season': season,
+                    'location': location_name,
                     'stage': stage,
                     'water_treatment': 'Normal',
                     'is_check': False,
@@ -1219,7 +1280,7 @@ elif page == "📥 Import ข้อมูลเก่า":
                 for ci, col_name in col_map.items():
                     val = row.iloc[ci] if ci < len(row) else None
                     if col_name == 'entry_no':
-                        rec[col_name] = int(val) if pd.notna(val) else None
+                        rec[col_name] = int(float(val)) if pd.notna(val) else None
                     elif col_name == 'pedigree':
                         rec[col_name] = str(val).strip() if pd.notna(val) else None
                     else:
