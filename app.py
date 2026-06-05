@@ -266,6 +266,17 @@ def _parse_old_yt_sheet(df, sheet_name, trial_type):
     if not records: return None
     result = pd.DataFrame(records)
     result['trial_type'] = trial_type
+    # Normalize column names to match modern format
+    if 'entry_no' in result.columns and 'entry' not in result.columns:
+        result['entry'] = result['entry_no']
+    if 'rep' not in result.columns:
+        result['rep'] = 1
+    if 'blk' not in result.columns:
+        result['blk'] = 1
+    if 'is_check' not in result.columns:
+        result['is_check'] = False
+    if 'yield_ton_rai' not in result.columns and 'yield_kg_rai' in result.columns:
+        result['yield_ton_rai'] = result['yield_kg_rai'] / 1000
     return result
 
 
