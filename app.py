@@ -273,7 +273,8 @@ with st.sidebar:
         "📊 Yield Trial Analysis",
         "💧 Drought Tolerance (WS vs WW)",
         "📈 Multi-Trial Summary",
-        "🗄️ Database"
+        "🗄️ Database",
+        "📥 Import ข้อมูลเก่า"
     ])
 
     st.divider()
@@ -1076,3 +1077,299 @@ elif page == "🗄️ Database":
                     st.dataframe(pd.DataFrame(r_yt2.data), use_container_width=True, height=300)
             except Exception as e:
                 st.error(f"Error: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: IMPORT ข้อมูลเก่า
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "📥 Import ข้อมูลเก่า":
+    st.markdown('<div class="main-header"><h1>📥 Import ข้อมูลเก่า</h1><p>แปลงและนำเข้าไฟล์ .XLS ยุคเก่า (1995-2020) เข้า Database อัตโนมัติ</p></div>', unsafe_allow_html=True)
+
+    # Connect Supabase
+    try:
+        from supabase import create_client
+        supabase = create_client(
+            st.secrets["supabase"]["url"],
+            st.secrets["supabase"]["secret_key"]
+        )
+    except Exception as e:
+        st.error(f"❌ ไม่สามารถเชื่อมต่อ Database: {e}")
+        st.stop()
+
+    import re, io
+    from openpyxl import load_workbook
+
+    def safe_float(v):
+        try: return round(float(v), 2) if pd.notna(v) else None
+        except: return None
+
+    def parse_old_yt_file(file_bytes, filename):
+        """Parse old XLS/XLSX yield trial file — multi-sheet format"""
+        import tempfile, os
+        # Save to temp file for LibreOffice conversion if needed
+        suffix = '.xlsx' if filename.lower().endswith('.xlsx') else '.xls'
+
+        # Try reading directly first
+        try:
+            xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        except Exception:
+            st.warning(f"⚠️ ไม่สามารถอ่านไฟล์ {filename} โดยตรง")
+            return []
+
+        SKIP = {'วิเคราะห์รวม','sheet1','sheet2','sheet3','acloss',
+                '(1)วิเคราะห์รวม','(2) วิเคราะห์รวม'}
+
+        # Detect exp_code and year from filename
+        fname = os.path.splitext(filename)[0].upper()
+        year_match = re.search(r'(\d{2})$', fname)
+        year = None
+        if year_match:
+            yr2 = int(year_match.group(1))
+            year = 1900 + yr2 if yr2 >= 95 else 2000 + yr2
+
+        # Detect stage from filename prefix
+        stage_map = {
+            'COMM': 'coordinated', 'SYT': 'standard', 'RYT': 'regional',
+            'FYT': 'farm', 'YT': 'preliminary', 'PT': 'preliminary',
+            'ST': 'standard', 'CT': 'coordinated'
+        }
+        stage = 'coordinated'
+        for prefix, s in stage_map.items():
+            if fname.startswith(prefix):
+                stage = s
+                break
+
+        all_records = []
+        for sh in xl.sheet_names:
+            if sh.lower() in SKIP or 'รวม' in sh:
+                continue
+
+            try:
+                df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sh, header=None)
+            except Exception:
+                continue
+
+            # Find title & year from sheet
+            title_text = ''
+            for i in range(min(5, len(df))):
+                for cell in df.iloc[i]:
+                    if pd.notna(cell): title_text += str(cell) + ' '
+
+            # Override year from title if found
+            m = re.search(r'\b(25\d{2})\b', title_text)
+            if m:
+                year = int(m.group(1)) - 543
+
+            # Find header row
+            header_row = None
+            for i in range(min(8, len(df))):
+                vals = [str(v).strip() for v in df.iloc[i] if pd.notna(v)]
+                if any(v in ['Entry', 'เลข'] for v in vals):
+                    header_row = i
+                    break
+            if header_row is None:
+                continue
+
+            # Map columns
+            col_map = {0: 'entry_no', 1: 'pedigree', 2: 'yield_kg_rai'}
+            for ci in range(3, min(20, df.shape[1])):
+                col_vals = []
+                for r in range(max(0, header_row-1), min(header_row+3, len(df))):
+                    v = df.iloc[r, ci] if ci < df.shape[1] else ''
+                    col_vals.append(str(v).strip() if pd.notna(v) else '')
+                combined = ' '.join(col_vals).lower()
+                if 'ออกดอก' in combined or 'tass' in combined:
+                    col_map[ci] = 'days_tass'
+                elif 'สูงทั้งต้น' in combined or ('สูง' in combined and 'ทั้ง' in combined):
+                    col_map[ci] = 'plant_ht'
+                elif 'สูงฝัก' in combined or ('สูง' in combined and 'ฝัก' in combined):
+                    col_map[ci] = 'ear_ht'
+                elif 'ความชื้น' in combined or 'ชื้นใน' in combined:
+                    col_map[ci] = 'moist_pct'
+                elif 'หัก' in combined and 'เพราะ' in combined:
+                    col_map[ci] = 'root_lodge'
+                elif 'ล้ม' in combined:
+                    col_map[ci] = 'stalk_lodge'
+                elif 'ฝักเสีย' in combined:
+                    col_map[ci] = 'ear_rot'
+                elif 'ทรงต้น' in combined:
+                    col_map[ci] = 'plant_asp'
+                elif 'ลักษณะฝัก' in combined or 'ear_asp' in combined:
+                    col_map[ci] = 'ear_asp'
+
+            # Parse data rows
+            data_df = df.iloc[header_row+2:].copy()
+            data_df = data_df[pd.to_numeric(data_df.iloc[:, 0], errors='coerce').notna()]
+
+            for _, row in data_df.iterrows():
+                rec = {
+                    'exp_code': fname,
+                    'year': year,
+                    'season': 'R',
+                    'location': sh,
+                    'stage': stage,
+                    'water_treatment': 'Normal',
+                    'is_check': False,
+                }
+                for ci, col_name in col_map.items():
+                    val = row.iloc[ci] if ci < len(row) else None
+                    if col_name == 'entry_no':
+                        rec[col_name] = int(val) if pd.notna(val) else None
+                    elif col_name == 'pedigree':
+                        rec[col_name] = str(val).strip() if pd.notna(val) else None
+                    else:
+                        rec[col_name] = safe_float(val)
+
+                if rec.get('yield_kg_rai'):
+                    rec['yield_ton_rai'] = round(rec['yield_kg_rai'] / 1000, 4)
+
+                if rec.get('entry_no') and rec.get('pedigree') and rec.get('yield_kg_rai'):
+                    all_records.append(rec)
+
+        return all_records
+
+    # ── UI ──────────────────────────────────────────────────────────────
+    st.info("📌 รองรับไฟล์ .XLS และ .XLSX จากยุคเก่า — อัพโหลดได้หลายไฟล์พร้อมกัน")
+
+    uploaded = st.file_uploader(
+        "อัพโหลดไฟล์ .XLS / .XLSX ข้อมูลเก่า",
+        type=['xls', 'xlsx'],
+        accept_multiple_files=True
+    )
+
+    if uploaded:
+        all_parsed = {}
+        for f in uploaded:
+            data = f.read()
+            # Convert .xls to .xlsx via LibreOffice if needed
+            if f.name.lower().endswith('.xls'):
+                try:
+                    import subprocess, tempfile, shutil
+                    with tempfile.NamedTemporaryFile(suffix='.xls', delete=False) as tmp:
+                        tmp.write(data)
+                        tmp_path = tmp.name
+                    out_dir = tempfile.mkdtemp()
+                    subprocess.run([
+                        'python3', '/mnt/skills/public/xlsx/scripts/office/soffice.py',
+                        '--convert-to', 'xlsx', '--outdir', out_dir, tmp_path
+                    ], capture_output=True)
+                    xlsx_path = os.path.join(out_dir, os.path.basename(tmp_path).replace('.xls', '.xlsx'))
+                    if os.path.exists(xlsx_path):
+                        with open(xlsx_path, 'rb') as xf:
+                            data = xf.read()
+                        fname_use = f.name.replace('.xls', '.xlsx').replace('.XLS', '.xlsx')
+                    else:
+                        fname_use = f.name
+                    shutil.rmtree(out_dir, ignore_errors=True)
+                    os.unlink(tmp_path)
+                except Exception as e:
+                    st.warning(f"⚠️ แปลงไฟล์ {f.name} ไม่ได้: {e}")
+                    fname_use = f.name
+            else:
+                fname_use = f.name
+
+            with st.spinner(f"กำลังอ่าน {f.name}..."):
+                records = parse_old_yt_file(data, fname_use)
+            all_parsed[f.name] = records
+
+        # Summary
+        section("📊 สรุปข้อมูลที่อ่านได้")
+        total = sum(len(v) for v in all_parsed.values())
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("ไฟล์ที่อัพโหลด", len(uploaded))
+        col2.metric("Records ทั้งหมด", total)
+        col3.metric("พร้อม Import", total)
+
+        summary_rows = []
+        for fname, recs in all_parsed.items():
+            if recs:
+                years = set(r.get('year') for r in recs if r.get('year'))
+                locs  = set(r.get('location','') for r in recs)
+                summary_rows.append({
+                    'ไฟล์': fname,
+                    'Records': len(recs),
+                    'ปี': ', '.join(str(y) for y in sorted(years)),
+                    'สถานที่ทดลอง': len(locs),
+                    'ตัวอย่างพันธุ์': recs[0].get('pedigree','') if recs else ''
+                })
+            else:
+                summary_rows.append({'ไฟล์': fname, 'Records': 0, 'ปี': '-', 'สถานที่ทดลอง': 0, 'ตัวอย่างพันธุ์': '-'})
+
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+        # Preview
+        if total > 0:
+            section("👀 Preview ข้อมูล (20 แถวแรก)")
+            all_recs_flat = [r for recs in all_parsed.values() for r in recs]
+            df_preview = pd.DataFrame(all_recs_flat)
+            show_cols = [c for c in ['exp_code','year','season','location','stage',
+                                      'entry_no','pedigree','yield_kg_rai','yield_ton_rai',
+                                      'days_tass','plant_ht','moist_pct'] if c in df_preview.columns]
+            st.dataframe(df_preview[show_cols].head(20), use_container_width=True)
+
+            # Download preview
+            csv = df_preview.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("⬇️ Download Preview CSV", csv, "import_preview.csv", "text/csv")
+
+            st.divider()
+
+            # Season & stage override
+            col1, col2 = st.columns(2)
+            with col1:
+                season_override = st.selectbox("ฤดูกาล (ใช้กับทุกไฟล์)", ['R','D'], 
+                    help='R = ฝน, D = แล้ง')
+            with col2:
+                stage_override = st.selectbox("Stage", 
+                    ['coordinated','standard','preliminary','farm','regional'],
+                    help='ประเภทงานทดลอง')
+
+            st.warning(f"⚠️ จะนำเข้า **{total} records** เข้า Database — ตรวจสอบ Preview ก่อนกด Import")
+
+            if st.button(f"🚀 Import {total} records เข้า Database", type="primary"):
+                # Apply overrides
+                for r in all_recs_flat:
+                    r['season'] = season_override
+                    r['stage'] = stage_override
+
+                # Batch insert
+                batch_size = 100
+                success = 0
+                errors = 0
+                progress = st.progress(0)
+
+                for i in range(0, len(all_recs_flat), batch_size):
+                    batch = all_recs_flat[i:i+batch_size]
+                    try:
+                        supabase.table("yield_trial").upsert(
+                            batch,
+                            on_conflict="exp_code,entry_no,rep"
+                        ).execute()
+                        success += len(batch)
+                    except Exception as e:
+                        # Try without upsert conflict
+                        try:
+                            supabase.table("yield_trial").insert(batch, upsert=False).execute()
+                            success += len(batch)
+                        except Exception as e2:
+                            errors += len(batch)
+                    progress.progress(min((i + batch_size) / len(all_recs_flat), 1.0))
+
+                if success > 0:
+                    st.success(f"✅ Import สำเร็จ {success} records!")
+                if errors > 0:
+                    st.warning(f"⚠️ มี {errors} records ที่ import ไม่ได้ (อาจซ้ำ)")
+
+    else:
+        section("📖 วิธีใช้งาน")
+        st.markdown("""
+        1. **อัพโหลดไฟล์** .XLS หรือ .XLSX จากยุคเก่า (หลายไฟล์พร้อมกันได้)
+        2. **ตรวจสอบ Preview** ว่าข้อมูลถูกต้อง
+        3. **เลือกฤดูกาลและ Stage** ให้ถูกต้อง
+        4. กด **Import เข้า Database**
+
+        ---
+        **รองรับ format:**
+        - COMM95, FYT95, RYT95, SYT95 (ปี 1995)
+        - ไฟล์ที่มี sheet แยกตามสถานที่ทดลอง
+        - ไฟล์ที่มี header หลายแถวแบบไทย
+        """)
