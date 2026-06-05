@@ -1207,8 +1207,29 @@ elif page == "🗄️ Database":
                     }
                     records_yt.append(rec)
                 try:
-                    supabase.table("yield_trial").upsert(records_yt, on_conflict="exp_code,entry_no,rep").execute()
-                    st.success(f"✅ บันทึก {len(records_yt)} observations สำเร็จ!")
+                    # Deduplicate within batch first
+                    seen = set()
+                    unique_recs = []
+                    for r in records_yt:
+                        key = (r.get('exp_code'), r.get('entry_no'), r.get('rep'), r.get('location',''))
+                        if key not in seen:
+                            seen.add(key)
+                            unique_recs.append(r)
+                    # Insert in batches of 50
+                    success = 0
+                    for i in range(0, len(unique_recs), 50):
+                        batch = unique_recs[i:i+50]
+                        try:
+                            supabase.table("yield_trial").upsert(batch, on_conflict="exp_code,entry_no,rep").execute()
+                            success += len(batch)
+                        except Exception:
+                            for rec_single in batch:
+                                try:
+                                    supabase.table("yield_trial").insert([rec_single]).execute()
+                                    success += 1
+                                except Exception:
+                                    pass
+                    st.success(f"✅ บันทึก {success} observations สำเร็จ! (จากทั้งหมด {len(records_yt)} rows)")
                 except Exception as e:
                     st.error(f"Error: {e}")
         else:
