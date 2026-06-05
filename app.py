@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import re
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -241,8 +242,7 @@ def _parse_old_yt_sheet(df, sheet_name, trial_type):
         'SPB':'สุพรรณบุรี','SKL':'สงขลา','SW':'ไร่สุวรรณ',
         'CM':'เชียงใหม่','KK':'ขอนแก่น','LB':'ลพบุรี',
     }
-    import re as _re
-    loc_code = _re.sub(r'\d+.*$', '', sheet_name.upper()).strip('-').strip()
+    loc_code = re.sub(r'\d+.*$', '', sheet_name.upper()).strip('-').strip()
     location = LOC_MAP.get(loc_code, sheet_name)
 
     records = []
