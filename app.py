@@ -86,11 +86,40 @@ def load_nursery(f):
     return df
 
 def load_yield_trial(f, trial_type='WW'):
-    df = pd.read_excel(f, sheet_name='ข้อมูลดิบ', header=None, skiprows=4)
-    df.columns = range(len(df.columns))
-    df = df[pd.to_numeric(df[0], errors='coerce').notna()].copy()
-    ncols = df.shape[1]
+    # Try modern format first (sheet 'ข้อมูลดิบ')
+    try:
+        df = pd.read_excel(f, sheet_name='ข้อมูลดิบ', header=None, skiprows=4)
+        df.columns = range(len(df.columns))
+        df = df[pd.to_numeric(df[0], errors='coerce').notna()].copy()
+        return _parse_modern_yt(df, trial_type)
+    except Exception:
+        pass
 
+    # Old format — multi-sheet, read first data sheet
+    try:
+        xl = pd.ExcelFile(f)
+        SKIP = {'combine analysis','combined analysis','วิเคราะห์รวม',
+                'sheet1','sheet2','planting summary'}
+        all_dfs = []
+        for sh in xl.sheet_names:
+            if sh.lower().strip() in SKIP or 'analys' in sh.lower() or 'รวม' in sh:
+                continue
+            try:
+                df_sh = pd.read_excel(f, sheet_name=sh, header=None)
+                parsed = _parse_old_yt_sheet(df_sh, sh, trial_type)
+                if parsed is not None and len(parsed) > 0:
+                    all_dfs.append(parsed)
+            except Exception:
+                continue
+        if all_dfs:
+            return pd.concat(all_dfs, ignore_index=True)
+    except Exception:
+        pass
+
+    return pd.DataFrame()
+
+def _parse_modern_yt(df, trial_type):
+    ncols = df.shape[1]
     if ncols >= 34:  # WS format (34 cols)
         col_map = {
             0:'rep', 1:'blk', 2:'entry', 3:'plot',
@@ -157,7 +186,89 @@ def load_yield_trial(f, trial_type='WW'):
     df['yield_ton_rai'] = df['yield_kg_rai'] / 1000 if 'yield_kg_rai' in df.columns else np.nan
     return df
 
-def load_pedigree_from_source(f):
+def _parse_old_yt_sheet(df, sheet_name, trial_type):
+    """Parse one sheet from old format yield trial (1995-2010 style)"""
+    if len(df) < 4: return None
+
+    # Find header row (contains 'Pedigree')
+    header_row = 1
+    for i in range(min(5, len(df))):
+        vals = [str(v).strip() for v in df.iloc[i] if pd.notna(v)]
+        if any('Pedigree' in v or 'ชื่อพันธุ์' in v for v in vals):
+            header_row = i
+            break
+
+    def get_col_text(ci):
+        texts = []
+        for r in range(header_row, min(header_row+3, len(df))):
+            v = df.iloc[r, ci] if ci < df.shape[1] else None
+            if pd.notna(v): texts.append(str(v).strip().lower())
+        return ' '.join(texts)
+
+    ncols = df.shape[1]
+    col_map = {}
+    for ci in range(ncols):
+        ct = get_col_text(ci)
+        if 'pedigree' in ct: col_map[ci] = 'pedigree'
+        elif ct.strip() in ['ent','entry']: col_map[ci] = 'entry_no'
+        elif 'day to flower' in ct or 'flowering' in ct: col_map[ci] = 'days_tass'
+        elif 'plant' in ct and ('height' in ct or 'ht' in ct): col_map[ci] = 'plant_ht'
+        elif 'ear' in ct and ('height' in ct or 'ht' in ct) and 'rot' not in ct and 'total' not in ct: col_map[ci] = 'ear_ht'
+        elif 'root' in ct and 'lodg' in ct: col_map[ci] = 'root_lodge'
+        elif 'stalk' in ct and 'lodg' in ct: col_map[ci] = 'stalk_lodge'
+        elif 'stand' in ct: col_map[ci] = 'stand_count'
+        elif 'ear' in ct and 'total' in ct: col_map[ci] = 'n_ears_total'
+        elif 'rot' in ct: col_map[ci] = 'ear_rot'
+        elif 'shell' in ct: col_map[ci] = 'shell_pct'
+        elif 'moist' in ct: col_map[ci] = 'moist_pct'
+        elif 'aspect' in ct and 'plant' in ct: col_map[ci] = 'plant_asp'
+        elif 'hk' in ct or 'open' in ct: col_map[ci] = 'open_hk'
+        elif 'yield' in ct and 'index' not in ct: col_map[ci] = 'yield_kg_rai'
+
+    if 'pedigree' not in col_map.values(): col_map[0] = 'pedigree'
+    if 'entry_no' not in col_map.values(): col_map[1] = 'entry_no'
+    if 'yield_kg_rai' not in col_map.values(): col_map[ncols-2] = 'yield_kg_rai'
+
+    entry_ci = next((k for k,v in col_map.items() if v=='entry_no'), 1)
+    data_df = df.iloc[header_row+2:].copy()
+    data_df = data_df[pd.to_numeric(data_df.iloc[:, entry_ci], errors='coerce').notna()]
+    if len(data_df) == 0: return None
+
+    # Location from sheet name
+    LOC_MAP = {
+        'NSW':'นครสวรรค์','NRS':'นครราชสีมา','SRB':'สระบุรี',
+        'PHB':'เพชรบูรณ์','SKT':'สุโขทัย','LOE':'เลย',
+        'SPB':'สุพรรณบุรี','SKL':'สงขลา','SW':'ไร่สุวรรณ',
+        'CM':'เชียงใหม่','KK':'ขอนแก่น','LB':'ลพบุรี',
+    }
+    import re as _re
+    loc_code = _re.sub(r'\d+.*$', '', sheet_name.upper()).strip('-').strip()
+    location = LOC_MAP.get(loc_code, sheet_name)
+
+    records = []
+    for _, row in data_df.iterrows():
+        rec = {'location': location, 'trial_type': trial_type, 'is_check': False}
+        for ci, col_name in col_map.items():
+            val = row.iloc[ci] if ci < len(row) else None
+            if col_name == 'entry_no':
+                try: rec[col_name] = int(float(val)) if pd.notna(val) else None
+                except: pass
+            elif col_name == 'pedigree':
+                rec[col_name] = str(val).strip() if pd.notna(val) else None
+            else:
+                try: rec[col_name] = round(float(val), 2) if pd.notna(val) else None
+                except: rec[col_name] = None
+        if rec.get('yield_kg_rai'):
+            rec['yield_ton_rai'] = round(rec['yield_kg_rai']/1000, 4)
+        if rec.get('pedigree'):
+            records.append(rec)
+
+    if not records: return None
+    result = pd.DataFrame(records)
+    result['trial_type'] = trial_type
+    return result
+
+
     try:
         xl = pd.ExcelFile(f)
         if 'source' in xl.sheet_names:
@@ -336,14 +447,29 @@ def load_files_from_drive():
             data = buf.read()
 
             try:
-                if name.startswith("P") and name.endswith(".xlsx"):
+                name_up = name.upper()
+                ext_ok  = name.endswith('.xlsx') or name.endswith('.xls')
+                if not ext_ok:
+                    continue
+
+                # Nursery: starts with P + digits
+                if re.match(r'^P\d', name_up):
                     nursery[name] = load_nursery(io.BytesIO(data))
-                elif "WS" in name.upper() and name.endswith(".xlsx"):
+                # WS trial
+                elif 'WS' in name_up:
                     ws[name] = load_yield_trial(io.BytesIO(data), "WS")
-                elif "WW" in name.upper() and name.endswith(".xlsx"):
+                # WW trial
+                elif 'WW' in name_up:
                     ww[name] = load_yield_trial(io.BytesIO(data), "WW")
-                elif name.startswith("YT") and name.endswith(".xlsx"):
+                # Modern YT
+                elif name_up.startswith('YT'):
                     yt[name] = load_yield_trial(io.BytesIO(data), "YT")
+                # Old format: COMM, FYT, RYT, SYT, NST, etc.
+                elif re.match(r'^(COMM|FYT|RYT|SYT|NST|ST|CT|PT|BMSO|LEO|PJBO|PPB|SSR|SWF|NSF|PBN|PBF)', name_up):
+                    yt[name] = load_yield_trial(io.BytesIO(data), "YT")
+                # Planting summary — skip
+                elif 'PLANTING' in name_up or 'SUMMARY' in name_up:
+                    pass
             except Exception as e:
                 st.sidebar.warning(f"⚠️ {name}: {e}")
 
