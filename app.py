@@ -742,7 +742,9 @@ elif page == "📊 Yield Trial Analysis":
             # Filter controls
             col1, col2, col3 = st.columns(3)
             with col1:
-                top_n = st.slider("แสดง Top N", 10, len(result), min(50, len(result)), 5)
+                max_n = max(len(result), 11)
+                default_n = min(50, len(result)) if len(result) >= 10 else len(result)
+                top_n = st.slider("แสดง Top N", min(10, len(result)), max_n, default_n, 1) if len(result) > 1 else len(result)
             with col2:
                 min_pct = st.number_input("% ของ Check ขั้นต่ำ", 0, 200, 0)
             with col3:
