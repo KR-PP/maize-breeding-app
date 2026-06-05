@@ -315,6 +315,20 @@ def _parse_old_yt_sheet(df, sheet_name, trial_type):
 def calc_means_vs_checks(df, trait='yield_ton_rai'):
     if trait not in df.columns:
         return pd.DataFrame()
+
+    # Ensure required columns exist
+    if 'is_check' not in df.columns:
+        df = df.copy()
+        df['is_check'] = False
+    if 'entry' not in df.columns and 'entry_no' in df.columns:
+        df = df.copy()
+        df['entry'] = df['entry_no']
+    if 'entry' not in df.columns:
+        return pd.DataFrame()
+    if 'origin' not in df.columns:
+        df = df.copy()
+        df['origin'] = None
+
     checks = df[df['is_check'] == True]
     trials = df[df['is_check'] == False]
     check_mean = checks[trait].mean() if len(checks) > 0 else np.nan
