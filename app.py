@@ -718,7 +718,7 @@ elif page == "📊 Yield Trial Analysis":
         st.stop()
 
     selected = st.selectbox("เลือก Trial", list(all_yt.keys()))
-    df_raw = all_yt[selected].copy()
+    df_raw = _normalize_df(all_yt[selected].copy())
 
     # Augmented RCBD adjustment
     df = calc_augmented_rcbd(df_raw, 'yield_ton_rai')
@@ -1019,13 +1019,14 @@ elif page == "📈 Multi-Trial Summary":
 
     section("📊 สรุปทุก Trial")
     rows = []
-    for name, df in all_yt.items():
+    for name, df_raw2 in all_yt.items():
+        df = _normalize_df(df_raw2.copy())
         ttype = df['trial_type'].iloc[0] if 'trial_type' in df.columns else '-'
         n_entries = df[df['is_check']==False][next((c for c in ['entry','entry_no'] if c in df.columns), 'entry')].nunique() if any(c in df.columns for c in ['entry','entry_no']) else 0
         n_checks = df[df['is_check']==True]['origin'].nunique() if 'origin' in df.columns else 0
-        mean_yield = df['yield_ton_rai'].mean()
-        check_yield = df[df['is_check']==True]['yield_ton_rai'].mean()
-        cv = cv_percent(df['yield_ton_rai'])
+        mean_yield = df['yield_ton_rai'].mean() if 'yield_ton_rai' in df.columns else np.nan
+        check_yield = df[df['is_check']==True]['yield_ton_rai'].mean() if 'yield_ton_rai' in df.columns else np.nan
+        cv = cv_percent(df['yield_ton_rai']) if 'yield_ton_rai' in df.columns else None
         rows.append({
             'Trial': name, 'Type': ttype,
             'Entries': n_entries, 'Checks': n_checks,
