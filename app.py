@@ -1103,15 +1103,22 @@ elif page == "📥 Import ข้อมูลเก่า":
 
     def parse_old_yt_file(file_bytes, filename):
         """Parse old XLS/XLSX yield trial file — multi-sheet format"""
-        import tempfile, os
-        # Save to temp file for LibreOffice conversion if needed
-        suffix = '.xlsx' if filename.lower().endswith('.xlsx') else '.xls'
+        fname = os.path.splitext(filename)[0].upper()
 
-        # Try reading directly first
+        # Try reading with appropriate engine
         try:
-            xl = pd.ExcelFile(io.BytesIO(file_bytes))
-        except Exception:
-            st.warning(f"⚠️ ไม่สามารถอ่านไฟล์ {filename} โดยตรง")
+            if filename.lower().endswith('.xls'):
+                # Use xlrd for old .xls format
+                try:
+                    import xlrd
+                    xl = pd.ExcelFile(io.BytesIO(file_bytes), engine='xlrd')
+                except ImportError:
+                    # xlrd not available — try openpyxl as fallback
+                    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+            else:
+                xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        except Exception as e:
+            st.warning(f"⚠️ ไม่สามารถอ่านไฟล์ {filename}: {e}")
             return []
 
         SKIP = {'วิเคราะห์รวม','sheet1','sheet2','sheet3','acloss',
@@ -1239,32 +1246,7 @@ elif page == "📥 Import ข้อมูลเก่า":
         all_parsed = {}
         for f in uploaded:
             data = f.read()
-            # Convert .xls to .xlsx via LibreOffice if needed
-            if f.name.lower().endswith('.xls'):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.xls', delete=False) as tmp:
-                        tmp.write(data)
-                        tmp_path = tmp.name
-                    out_dir = tempfile.mkdtemp()
-                    subprocess.run([
-                        'python3', '/mnt/skills/public/xlsx/scripts/office/soffice.py',
-                        '--convert-to', 'xlsx', '--outdir', out_dir, tmp_path
-                    ], capture_output=True)
-                    xlsx_path = os.path.join(out_dir, os.path.basename(tmp_path).replace('.xls', '.xlsx'))
-                    if os.path.exists(xlsx_path):
-                        with open(xlsx_path, 'rb') as xf:
-                            data = xf.read()
-                        fname_use = f.name.replace('.xls', '.xlsx').replace('.XLS', '.xlsx')
-                    else:
-                        fname_use = f.name
-                    shutil.rmtree(out_dir, ignore_errors=True)
-                    os.unlink(tmp_path)
-                except Exception as e:
-                    st.warning(f"⚠️ แปลงไฟล์ {f.name} ไม่ได้: {e}")
-                    fname_use = f.name
-            else:
-                fname_use = f.name
-
+            fname_use = f.name
             with st.spinner(f"กำลังอ่าน {f.name}..."):
                 records = parse_old_yt_file(data, fname_use)
             all_parsed[f.name] = records
