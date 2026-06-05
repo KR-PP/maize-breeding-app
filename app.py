@@ -1095,8 +1095,7 @@ elif page == "📥 Import ข้อมูลเก่า":
         st.error(f"❌ ไม่สามารถเชื่อมต่อ Database: {e}")
         st.stop()
 
-    import re, io
-    from openpyxl import load_workbook
+    import re, io, os, tempfile, shutil, subprocess
 
     def safe_float(v):
         try: return round(float(v), 2) if pd.notna(v) else None
@@ -1243,7 +1242,6 @@ elif page == "📥 Import ข้อมูลเก่า":
             # Convert .xls to .xlsx via LibreOffice if needed
             if f.name.lower().endswith('.xls'):
                 try:
-                    import subprocess, tempfile, shutil
                     with tempfile.NamedTemporaryFile(suffix='.xls', delete=False) as tmp:
                         tmp.write(data)
                         tmp_path = tmp.name
